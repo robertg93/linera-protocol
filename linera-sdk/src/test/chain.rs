@@ -157,6 +157,7 @@ impl ActiveChain {
     /// The `block_builder` parameter is a closure that should use the [`BlockBuilder`] parameter
     /// to provide the block's contents.
     pub async fn add_block(&self, block_builder: impl FnOnce(&mut BlockBuilder)) -> ConfirmedBlockCertificate {
+        println!("here 0");
         match self.try_add_block(block_builder).await {
             Ok(certificate) => certificate,
             Err(error) => {
