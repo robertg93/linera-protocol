@@ -196,12 +196,12 @@ impl ActiveChain {
         block_builder(&mut block);
         println!("here 1");
         // TODO(#2066): Remove boxing once call-stack is shallower
-        let certificate = Box::pin(block.try_sign(&blobs)).await?;
+        let certificate = Box::pin(block.try_sign(&blobs)).await.expect("Failed to sign block");
         println!("here 2");
         let result = self.validator.worker().fully_handle_certificate_with_notifications(certificate.clone(), &()).await;
         if let Err(WorkerError::BlobsNotFound(_)) = &result {
             println!("here 3");
-            self.validator.storage().maybe_write_blobs(&blobs).await?;
+            self.validator.storage().maybe_write_blobs(&blobs).await.expect("Failed to write blobs");
             println!("here 4");
             self.validator
                 .worker()
