@@ -157,9 +157,11 @@ impl ActiveChain {
     /// The `block_builder` parameter is a closure that should use the [`BlockBuilder`] parameter
     /// to provide the block's contents.
     pub async fn add_block(&self, block_builder: impl FnOnce(&mut BlockBuilder)) -> ConfirmedBlockCertificate {
-        match self.try_add_block(block_builder).await.expect("Failed to execute block.") {
+        match self.try_add_block(block_builder).await {
             Ok(certificate) => certificate,
-            Err(WorkerError::BlobsNotFound(_)) => self.try_add_block_with_blobs(block_builder, vec![]).await,
+            Err(error) => {
+                panic!("Failed to execute block: {error}");
+            }
         }
     }
 
@@ -191,13 +193,15 @@ impl ActiveChain {
         let mut block = BlockBuilder::new(self.description.into(), self.key_pair.public().into(), self.epoch().await, tip.as_ref(), self.validator.clone());
 
         block_builder(&mut block);
-
+        println!("here 1");
         // TODO(#2066): Remove boxing once call-stack is shallower
         let certificate = Box::pin(block.try_sign(&blobs)).await?;
-
+        println!("here 2");
         let result = self.validator.worker().fully_handle_certificate_with_notifications(certificate.clone(), &()).await;
         if let Err(WorkerError::BlobsNotFound(_)) = &result {
+            println!("here 3");
             self.validator.storage().maybe_write_blobs(&blobs).await?;
+            println!("here 4");
             self.validator
                 .worker()
                 .fully_handle_certificate_with_notifications(certificate.clone(), &())
