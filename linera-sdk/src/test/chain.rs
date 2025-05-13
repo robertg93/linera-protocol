@@ -58,11 +58,7 @@ impl ActiveChain {
     ///
     /// The microchain has a single owner that uses the `key_pair` to produce blocks. The
     /// `description` is used as the identifier of the microchain.
-    pub fn new(
-        key_pair: AccountSecretKey,
-        description: ChainDescription,
-        validator: TestValidator,
-    ) -> Self {
+    pub fn new(key_pair: AccountSecretKey, description: ChainDescription, validator: TestValidator) -> Self {
         ActiveChain {
             key_pair,
             description,
@@ -109,12 +105,7 @@ impl ActiveChain {
     pub async fn chain_balance(&self) -> Amount {
         let query = Query::System(SystemQuery);
 
-        let QueryOutcome { response, .. } = self
-            .validator
-            .worker()
-            .query_application(self.id(), query)
-            .await
-            .expect("Failed to query chain's balance");
+        let QueryOutcome { response, .. } = self.validator.worker().query_application(self.id(), query).await.expect("Failed to query chain's balance");
 
         let QueryResponse::System(SystemResponse { balance, .. }) = response else {
             panic!("Unexpected response from system application");
@@ -125,44 +116,19 @@ impl ActiveChain {
 
     /// Reads the current account balance on this microchain of an [`AccountOwner`].
     pub async fn owner_balance(&self, owner: &AccountOwner) -> Option<Amount> {
-        let chain_state = self
-            .validator
-            .worker()
-            .chain_state_view(self.id())
-            .await
-            .expect("Failed to read chain state");
+        let chain_state = self.validator.worker().chain_state_view(self.id()).await.expect("Failed to read chain state");
 
-        chain_state
-            .execution_state
-            .system
-            .balances
-            .get(owner)
-            .await
-            .expect("Failed to read owner balance")
+        chain_state.execution_state.system.balances.get(owner).await.expect("Failed to read owner balance")
     }
 
     /// Reads the current account balance on this microchain of all [`AccountOwner`]s.
-    pub async fn owner_balances(
-        &self,
-        owners: impl IntoIterator<Item = AccountOwner>,
-    ) -> HashMap<AccountOwner, Option<Amount>> {
-        let chain_state = self
-            .validator
-            .worker()
-            .chain_state_view(self.id())
-            .await
-            .expect("Failed to read chain state");
+    pub async fn owner_balances(&self, owners: impl IntoIterator<Item = AccountOwner>) -> HashMap<AccountOwner, Option<Amount>> {
+        let chain_state = self.validator.worker().chain_state_view(self.id()).await.expect("Failed to read chain state");
 
         let mut balances = HashMap::new();
 
         for owner in owners {
-            let balance = chain_state
-                .execution_state
-                .system
-                .balances
-                .get(&owner)
-                .await
-                .expect("Failed to read an owner's balance");
+            let balance = chain_state.execution_state.system.balances.get(&owner).await.expect("Failed to read an owner's balance");
 
             balances.insert(owner, balance);
         }
@@ -172,20 +138,9 @@ impl ActiveChain {
 
     /// Reads a list of [`AccountOwner`]s that have a non-zero balance on this microchain.
     pub async fn accounts(&self) -> Vec<AccountOwner> {
-        let chain_state = self
-            .validator
-            .worker()
-            .chain_state_view(self.id())
-            .await
-            .expect("Failed to read chain state");
+        let chain_state = self.validator.worker().chain_state_view(self.id()).await.expect("Failed to read chain state");
 
-        chain_state
-            .execution_state
-            .system
-            .balances
-            .indices()
-            .await
-            .expect("Failed to list accounts on the chain")
+        chain_state.execution_state.system.balances.indices().await.expect("Failed to list accounts on the chain")
     }
 
     /// Reads all the non-zero account balances on this microchain.
@@ -193,12 +148,7 @@ impl ActiveChain {
         self.owner_balances(self.accounts().await)
             .await
             .into_iter()
-            .map(|(owner, balance)| {
-                (
-                    owner,
-                    balance.expect("`accounts` should only return accounts with non-zero balance"),
-                )
-            })
+            .map(|(owner, balance)| (owner, balance.expect("`accounts` should only return accounts with non-zero balance")))
             .collect()
     }
 
@@ -206,37 +156,26 @@ impl ActiveChain {
     ///
     /// The `block_builder` parameter is a closure that should use the [`BlockBuilder`] parameter
     /// to provide the block's contents.
-    pub async fn add_block(
-        &self,
-        block_builder: impl FnOnce(&mut BlockBuilder),
-    ) -> ConfirmedBlockCertificate {
-        self.try_add_block(block_builder)
-            .await
-            .expect("Failed to execute block.")
+    pub async fn add_block(&self, block_builder: impl FnOnce(&mut BlockBuilder)) -> ConfirmedBlockCertificate {
+        match self.try_add_block(block_builder).await.expect("Failed to execute block.") {
+            Ok(certificate) => certificate,
+            Err(WorkerError::BlobsNotFound(_)) => self.try_add_block_with_blobs(block_builder, vec![]).await,
+        }
     }
 
     /// Adds a block to this microchain, passing the blobs to be used during certificate handling.
     ///
     /// The `block_builder` parameter is a closure that should use the [`BlockBuilder`] parameter
     /// to provide the block's contents.
-    pub async fn add_block_with_blobs(
-        &self,
-        block_builder: impl FnOnce(&mut BlockBuilder),
-        blobs: Vec<Blob>,
-    ) -> ConfirmedBlockCertificate {
-        self.try_add_block_with_blobs(block_builder, blobs)
-            .await
-            .expect("Failed to execute block.")
+    pub async fn add_block_with_blobs(&self, block_builder: impl FnOnce(&mut BlockBuilder), blobs: Vec<Blob>) -> ConfirmedBlockCertificate {
+        self.try_add_block_with_blobs(block_builder, blobs).await.expect("Failed to execute block.")
     }
 
     /// Tries to add a block to this microchain.
     ///
     /// The `block_builder` parameter is a closure that should use the [`BlockBuilder`] parameter
     /// to provide the block's contents.
-    pub async fn try_add_block(
-        &self,
-        block_builder: impl FnOnce(&mut BlockBuilder),
-    ) -> Result<ConfirmedBlockCertificate, WorkerError> {
+    pub async fn try_add_block(&self, block_builder: impl FnOnce(&mut BlockBuilder)) -> Result<ConfirmedBlockCertificate, WorkerError> {
         self.try_add_block_with_blobs(block_builder, vec![]).await
     }
 
@@ -247,30 +186,16 @@ impl ActiveChain {
     ///
     /// The blobs are either all written to storage, if executing the block fails due to a missing
     /// blob, or none are written to storage if executing the block succeeds without the blobs.
-    async fn try_add_block_with_blobs(
-        &self,
-        block_builder: impl FnOnce(&mut BlockBuilder),
-        blobs: Vec<Blob>,
-    ) -> Result<ConfirmedBlockCertificate, WorkerError> {
+    async fn try_add_block_with_blobs(&self, block_builder: impl FnOnce(&mut BlockBuilder), blobs: Vec<Blob>) -> Result<ConfirmedBlockCertificate, WorkerError> {
         let mut tip = self.tip.lock().await;
-        let mut block = BlockBuilder::new(
-            self.description.into(),
-            self.key_pair.public().into(),
-            self.epoch().await,
-            tip.as_ref(),
-            self.validator.clone(),
-        );
+        let mut block = BlockBuilder::new(self.description.into(), self.key_pair.public().into(), self.epoch().await, tip.as_ref(), self.validator.clone());
 
         block_builder(&mut block);
 
         // TODO(#2066): Remove boxing once call-stack is shallower
         let certificate = Box::pin(block.try_sign(&blobs)).await?;
 
-        let result = self
-            .validator
-            .worker()
-            .fully_handle_certificate_with_notifications(certificate.clone(), &())
-            .await;
+        let result = self.validator.worker().fully_handle_certificate_with_notifications(certificate.clone(), &()).await;
         if let Err(WorkerError::BlobsNotFound(_)) = &result {
             self.validator.storage().maybe_write_blobs(&blobs).await?;
             self.validator
@@ -312,9 +237,7 @@ impl ActiveChain {
     /// Searches the Cargo manifest for binaries that end with `contract` and `service`, builds
     /// them for WebAssembly and uses the generated binaries as the contract and service bytecode files
     /// to be published on this chain. Returns the module ID to reference the published module.
-    pub async fn publish_current_module<Abi, Parameters, InstantiationArgument>(
-        &self,
-    ) -> ModuleId<Abi, Parameters, InstantiationArgument> {
+    pub async fn publish_current_module<Abi, Parameters, InstantiationArgument>(&self) -> ModuleId<Abi, Parameters, InstantiationArgument> {
         self.publish_bytecode_files_in(".").await
     }
 
@@ -323,13 +246,8 @@ impl ActiveChain {
     /// Searches the Cargo manifest for binaries that end with `contract` and `service`, builds
     /// them for WebAssembly and uses the generated binaries as the contract and service bytecode files
     /// to be published on this chain. Returns the module ID to reference the published module.
-    pub async fn publish_bytecode_files_in<Abi, Parameters, InstantiationArgument>(
-        &self,
-        repository_path: impl AsRef<Path>,
-    ) -> ModuleId<Abi, Parameters, InstantiationArgument> {
-        let repository_path = fs::canonicalize(repository_path)
-            .await
-            .expect("Failed to obtain absolute application repository path");
+    pub async fn publish_bytecode_files_in<Abi, Parameters, InstantiationArgument>(&self, repository_path: impl AsRef<Path>) -> ModuleId<Abi, Parameters, InstantiationArgument> {
+        let repository_path = fs::canonicalize(repository_path).await.expect("Failed to obtain absolute application repository path");
         Self::build_bytecode_files_in(&repository_path).await;
         let (contract, service) = self.find_bytecode_files_in(&repository_path).await;
         let contract_blob = Blob::new_contract_bytecode(contract);
@@ -378,13 +296,9 @@ impl ActiveChain {
     ///
     /// Returns a tuple with the loaded contract and service [`CompressedBytecode`]s,
     /// ready to be published.
-    async fn find_bytecode_files_in(
-        &self,
-        repository: &Path,
-    ) -> (CompressedBytecode, CompressedBytecode) {
+    async fn find_bytecode_files_in(&self, repository: &Path) -> (CompressedBytecode, CompressedBytecode) {
         let manifest_path = repository.join("Cargo.toml");
-        let cargo_manifest =
-            Manifest::from_path(manifest_path).expect("Failed to load Cargo.toml manifest");
+        let cargo_manifest = Manifest::from_path(manifest_path).expect("Failed to load Cargo.toml manifest");
 
         let binaries = cargo_manifest
             .bin
@@ -406,19 +320,12 @@ impl ActiveChain {
             (&binaries[1], &binaries[0])
         };
 
-        let base_path = self
-            .find_output_directory_of(repository)
-            .await
-            .expect("Failed to look for output binaries");
+        let base_path = self.find_output_directory_of(repository).await.expect("Failed to look for output binaries");
         let contract_path = base_path.join(format!("{}.wasm", contract_binary));
         let service_path = base_path.join(format!("{}.wasm", service_binary));
 
-        let contract = Bytecode::load_from_file(contract_path)
-            .await
-            .expect("Failed to load contract bytecode from file");
-        let service = Bytecode::load_from_file(service_path)
-            .await
-            .expect("Failed to load service bytecode from file");
+        let contract = Bytecode::load_from_file(contract_path).await.expect("Failed to load contract bytecode from file");
+        let service = Bytecode::load_from_file(service_path).await.expect("Failed to load service bytecode from file");
 
         tokio::task::spawn_blocking(move || (contract.compress(), service.compress()))
             .await
@@ -437,12 +344,9 @@ impl ActiveChain {
         let mut output_path = current_directory.join(output_sub_directory);
 
         while !fs::try_exists(&output_path).await? {
-            current_directory = current_directory.parent().unwrap_or_else(|| {
-                panic!(
-                    "Failed to find Wasm binary output directory in {}",
-                    repository.display()
-                )
-            });
+            current_directory = current_directory
+                .parent()
+                .unwrap_or_else(|| panic!("Failed to find Wasm binary output directory in {}", repository.display()));
 
             output_path = current_directory.join(output_sub_directory);
         }
@@ -452,15 +356,7 @@ impl ActiveChain {
 
     /// Returns the height of the tip of this microchain.
     pub async fn get_tip_height(&self) -> BlockHeight {
-        self.tip
-            .lock()
-            .await
-            .as_ref()
-            .expect("Block was not successfully added")
-            .inner()
-            .block()
-            .header
-            .height
+        self.tip.lock().await.as_ref().expect("Block was not successfully added").inner().block().header.height
     }
 
     /// Creates an application on this microchain, using the module referenced by `module_id`.
@@ -517,48 +413,30 @@ impl ActiveChain {
 
     /// Returns whether this chain has been closed.
     pub async fn is_closed(&self) -> bool {
-        let chain = self
-            .validator
-            .worker()
-            .chain_state_view(self.id())
-            .await
-            .expect("Failed to load chain");
+        let chain = self.validator.worker().chain_state_view(self.id()).await.expect("Failed to load chain");
         *chain.execution_state.system.closed.get()
     }
 
     /// Executes a `query` on an `application`'s state on this microchain.
     ///
     /// Returns the deserialized response from the `application`.
-    pub async fn query<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: Abi::Query,
-    ) -> QueryOutcome<Abi::QueryResponse>
+    pub async fn query<Abi>(&self, application_id: ApplicationId<Abi>, query: Abi::Query) -> QueryOutcome<Abi::QueryResponse>
     where
         Abi: ServiceAbi,
     {
-        self.try_query(application_id, query)
-            .await
-            .expect("Failed to execute application service query")
+        self.try_query(application_id, query).await.expect("Failed to execute application service query")
     }
 
     /// Attempts to execute a `query` on an `application`'s state on this microchain.
     ///
     /// Returns the deserialized response from the `application`.
-    pub async fn try_query<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: Abi::Query,
-    ) -> Result<QueryOutcome<Abi::QueryResponse>, TryQueryError>
+    pub async fn try_query<Abi>(&self, application_id: ApplicationId<Abi>, query: Abi::Query) -> Result<QueryOutcome<Abi::QueryResponse>, TryQueryError>
     where
         Abi: ServiceAbi,
     {
         let query_bytes = serde_json::to_vec(&query)?;
 
-        let QueryOutcome {
-            response,
-            operations,
-        } = self
+        let QueryOutcome { response, operations } = self
             .validator
             .worker()
             .query_application(
@@ -571,9 +449,7 @@ impl ActiveChain {
             .await?;
 
         let deserialized_response = match response {
-            QueryResponse::User(bytes) => {
-                serde_json::from_slice(&bytes).expect("Failed to deserialize query response")
-            }
+            QueryResponse::User(bytes) => serde_json::from_slice(&bytes).expect("Failed to deserialize query response"),
             QueryResponse::System(_) => {
                 unreachable!("User query returned a system response")
             }
@@ -588,11 +464,7 @@ impl ActiveChain {
     /// Executes a GraphQL `query` on an `application`'s state on this microchain.
     ///
     /// Returns the deserialized GraphQL JSON response from the `application`.
-    pub async fn graphql_query<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: impl Into<async_graphql::Request>,
-    ) -> QueryOutcome<serde_json::Value>
+    pub async fn graphql_query<Abi>(&self, application_id: ApplicationId<Abi>, query: impl Into<async_graphql::Request>) -> QueryOutcome<serde_json::Value>
     where
         Abi: ServiceAbi<Query = async_graphql::Request, QueryResponse = async_graphql::Response>,
     {
@@ -607,57 +479,37 @@ impl ActiveChain {
     /// Attempts to execute a GraphQL `query` on an `application`'s state on this microchain.
     ///
     /// Returns the deserialized GraphQL JSON response from the `application`.
-    pub async fn try_graphql_query<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: impl Into<async_graphql::Request>,
-    ) -> Result<QueryOutcome<serde_json::Value>, TryGraphQLQueryError>
+    pub async fn try_graphql_query<Abi>(&self, application_id: ApplicationId<Abi>, query: impl Into<async_graphql::Request>) -> Result<QueryOutcome<serde_json::Value>, TryGraphQLQueryError>
     where
         Abi: ServiceAbi<Query = async_graphql::Request, QueryResponse = async_graphql::Response>,
     {
         let query = query.into();
-        let QueryOutcome {
-            response,
-            operations,
-        } = self.try_query(application_id, query).await?;
+        let QueryOutcome { response, operations } = self.try_query(application_id, query).await?;
 
         if !response.errors.is_empty() {
             return Err(TryGraphQLQueryError::Service(response.errors));
         }
         let json_response = response.data.into_json()?;
 
-        Ok(QueryOutcome {
-            response: json_response,
-            operations,
-        })
+        Ok(QueryOutcome { response: json_response, operations })
     }
 
     /// Executes a GraphQL `mutation` on an `application` and proposes a block with the resulting
     /// scheduled operations.
     ///
     /// Returns the certificate of the new block.
-    pub async fn graphql_mutation<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: impl Into<async_graphql::Request>,
-    ) -> ConfirmedBlockCertificate
+    pub async fn graphql_mutation<Abi>(&self, application_id: ApplicationId<Abi>, query: impl Into<async_graphql::Request>) -> ConfirmedBlockCertificate
     where
         Abi: ServiceAbi<Query = async_graphql::Request, QueryResponse = async_graphql::Response>,
     {
-        self.try_graphql_mutation(application_id, query)
-            .await
-            .expect("Failed to execute service GraphQL mutation")
+        self.try_graphql_mutation(application_id, query).await.expect("Failed to execute service GraphQL mutation")
     }
 
     /// Attempts to execute a GraphQL `mutation` on an `application` and proposes a block with the
     /// resulting scheduled operations.
     ///
     /// Returns the certificate of the new block.
-    pub async fn try_graphql_mutation<Abi>(
-        &self,
-        application_id: ApplicationId<Abi>,
-        query: impl Into<async_graphql::Request>,
-    ) -> Result<ConfirmedBlockCertificate, TryGraphQLMutationError>
+    pub async fn try_graphql_mutation<Abi>(&self, application_id: ApplicationId<Abi>, query: impl Into<async_graphql::Request>) -> Result<ConfirmedBlockCertificate, TryGraphQLMutationError>
     where
         Abi: ServiceAbi<Query = async_graphql::Request, QueryResponse = async_graphql::Response>,
     {
@@ -667,10 +519,7 @@ impl ActiveChain {
             .try_add_block(|block| {
                 for operation in operations {
                     match operation {
-                        Operation::User {
-                            application_id,
-                            bytes,
-                        } => {
+                        Operation::User { application_id, bytes } => {
                             block.with_raw_operation(application_id, bytes);
                         }
                         Operation::System(system_operation) => {
@@ -720,9 +569,7 @@ pub enum TryGraphQLQueryError {
 impl From<TryQueryError> for TryGraphQLQueryError {
     fn from(query_error: TryQueryError) -> Self {
         match query_error {
-            TryQueryError::Serialization(error) => {
-                TryGraphQLQueryError::RequestSerialization(error)
-            }
+            TryQueryError::Serialization(error) => TryGraphQLQueryError::RequestSerialization(error),
             TryQueryError::Execution(error) => TryGraphQLQueryError::Execution(error),
         }
     }
